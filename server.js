@@ -1,9 +1,55 @@
 const express = require('express');
 const os = require('os');
 const path = require('path');
+const net = require('net');
+const fs = require('fs');
+const configPath = path.join(__dirname, 'config.json');
+
+// 默认配置（用于在配置文件缺失时创建默认 config.json）
+const defaultConfig = {
+  server: {
+    port: 3000,
+    enableRateLimit: true,
+    minSecondsAfterLastRequest: 10
+  },
+  getClientIp: {
+    getIpByXFF: true,
+    getIpByXFFFromStart: true,
+    getIpByXFFCount: 1
+  },
+  systemStats: {
+    updateInterval: 10000,
+    ipRequestCountSaveMinutes: 60,
+    MaxHistoryLength: 60
+  }
+};
+
+// 尝试安全加载配置文件：若不存在则创建默认文件并提示用户重启（不自动重启）
+let config = {};
+let configLoaded = false;
+if (!fs.existsSync(configPath)) {
+  try {
+    fs.writeFileSync(configPath, JSON.stringify(defaultConfig, null, 4), { flag: 'wx' });
+    console.log(`[提示] 默认配置文件已创建：${configPath}。请根据需要修改后重启服务（不会自动重启）。`);
+    config = defaultConfig;
+    configLoaded = true;
+  } catch (err) {
+    console.warn(`[警告] 创建默认配置文件失败：${err.message}`);
+    config = defaultConfig; // 退回到内存中的默认配置以继续运行
+  }
+} else {
+  try {
+    config = require(configPath) || {};
+    configLoaded = true;
+  } catch (err) {
+    console.warn(`[警告] 无法加载配置文件 ${configPath}，将使用内置默认配置，错误信息：${err.message}`);
+    config = defaultConfig;
+  }
+}
 
 const app = express();
-const port = 3000;
+app.set('trust proxy', true); // 如果服务器部署在反向代理后面，启用此设置以正确获取客户端IP地址
+const port = process.env.PORT || safeGetConfigValue('server.port', 3000);
 
 // 静态文件服务
 app.use(express.static(path.join(__dirname, 'public')));
@@ -15,19 +61,45 @@ const resourceHistory = {
   timestamp: []
 };
 
+// 安全获取配置值的函数，支持嵌套路径
+function safeGetConfigValue(path, defaultValue) {
+  const keys = path.split('.');
+  let value = config;
+  
+  for (const key of keys) {
+    if (value && typeof value === 'object' && key in value) {
+      value = value[key];
+    } else {
+      console.warn(`[警告] 配置项 ${path} 不存在，使用默认值: ${defaultValue}`);
+      return defaultValue;
+    }
+  }
+  try {
+    const parsedValue = parseInt(value, 10);
+    if (isNaN(parsedValue) || parsedValue < 1) {
+      throw new Error('Not a valid integer');
+    }
+    return parsedValue;
+  } catch (error) {
+    console.warn(`[警告] 配置项 ${path} 的值 "${value}" 无法转换为正整数，使用默认值: ${defaultValue}`);
+    return defaultValue;
+  }
+}
+
+
 // 系统状态缓存
 let systemStatsCache = null;
 let lastCacheUpdate = 0;
-const CACHE_INTERVAL = 10000; // 10秒
+const CACHE_INTERVAL = safeGetConfigValue('systemStats.updateInterval', 10000); // 默认10秒
 
 // IP请求计数存储
 const ipRequestCount = new Map();
 
-// 定时清空IP请求计数（每小时）
+// 定时清空IP请求计数（默认每小时）
 setInterval(() => {
   ipRequestCount.clear();
   console.log('IP请求计数已清空');
-}, 60 * 60 * 1000);
+}, safeGetConfigValue('systemStats.ipRequestCountSaveMinutes', 60) * 60 * 1000);
 
 // 上一次CPU时间戳（用于计算CPU使用率）
 let lastCpuInfo = null;
@@ -122,9 +194,15 @@ function fetchSystemStats() {
     // 解析CPU使用率，移除'%'符号
     const cpuUsageValue = cpuUsage === 'N/A' ? 0 : parseFloat(cpuUsage.replace('%', '')) || 0;
     resourceHistory.cpu.push(cpuUsageValue);
-    
-    // 保持历史数据不超过10分钟（60条，每10秒一条）
-    const maxDataPoints = 60;
+
+    // 安全获取值
+    // MaxHistoryLength: 保留的历史数据点数量。
+    // 例: 当 systemStats.updateInterval = 10000 ms（10s）且 MaxHistoryLength = 60 时，
+    // 保留时间为 60 * 10s = 600s = 10 分钟。
+    let MaxLength = safeGetConfigValue('systemStats.MaxHistoryLength', 60);
+
+    // 保持历史数据长度
+    const maxDataPoints = MaxLength;
     if (resourceHistory.timestamp.length > maxDataPoints) {
       resourceHistory.timestamp.shift();
       resourceHistory.memory.shift();
@@ -225,8 +303,9 @@ function checkRateLimit(ip) {
   
   const now = Date.now();
   const lastRequest = rateLimitStore.get(ip);
+  const limit = safeGetConfigValue('server.minSecondsAfterLastRequest', 10) * 1000; // 默认10秒
   
-  if (lastRequest && (now - lastRequest) < 10000) { // 10秒限制
+  if (lastRequest && (now - lastRequest) < limit) { // 限制时间
     return false;
   }
   
@@ -236,8 +315,37 @@ function checkRateLimit(ip) {
 
 // 获取客户端IP
 function getClientIP(req) {
-  return req.ip || req.connection.remoteAddress || req.socket.remoteAddress || req.connection.socket.remoteAddress;
-}
+    const xForwardedFor = req.headers["x-forwarded-for"];
+    if (config.getClientIp.getIpByXFF && xForwardedFor) {
+      // x-forwarded-for 大多数情况下是 "client_ip, proxy_ip1, proxy_ip2"
+      // 根据配置文件读取，默认从左侧读取第一个IP地址（即客户端IP）
+      const ipList = xForwardedFor.split(",").map(ip => ip.trim()); // 可以先统一trim
+      // 安全获取值
+      let N = safeGetConfigValue('getClientIp.getIpByXFFCount', 1);
+      
+      // 确保N不超过数组边界
+      if (N > ipList.length) {
+          // 配置超出范围：记录警告，并回退到最后一个IP
+          console.log(`[警告] getIpByXFFCount(${N}) 超出IP列表长度(${ipList.length})，将取最后一个IP`);
+          N = ipList.length; // 取最后一个
+      }
+        
+      if (config.getClientIp.getIpByXFFFromStart) {
+          // 从开头数：索引 = N - 1
+          return ipList[N - 1];
+      } else {
+         // 从末尾数：索引 = ipList.length - N
+          return ipList[ipList.length - N];
+      }
+    }
+    return (
+      req.headers["x-real-ip"] ||
+      req.connection.remoteAddress ||
+      req.socket.remoteAddress ||
+      (req.connection.socket ? req.connection.socket.remoteAddress : null) ||
+      req.ip
+    );
+  }
 
 // 状态API路由
 app.get('/api/status', (req, res) => {
@@ -248,7 +356,7 @@ app.get('/api/status', (req, res) => {
   ipRequestCount.set(clientIP, currentCount + 1);
   
   // 检查频率限制
-  if (!checkRateLimit(clientIP)) {
+  if (config.server.enableRateLimit && !checkRateLimit(clientIP)) {
     console.log(`[状态API] IP ${clientIP} 请求过于频繁，请稍后再试`);
     return res.status(429).json({ success: false, message: '请求过于频繁，请稍后再试' });
   }
@@ -277,6 +385,12 @@ setInterval(fetchSystemStats, CACHE_INTERVAL);
 
 // 启动服务器
 app.listen(port, () => {
+  if(!config) {
+    console.warn(`[警告] 配置文件加载失败，路径：${configPath} ，将使用默认配置`);
+  } else {
+    console.log('[配置] 配置文件加载成功');
+  }
+
   console.log(`服务器运行在 http://localhost:${port}`);
   // 初始获取系统状态
   fetchSystemStats();

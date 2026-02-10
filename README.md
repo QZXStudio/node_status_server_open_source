@@ -48,9 +48,27 @@ node_status_server_open_source/
 ├── server.js           # Express服务器主文件
 ├── package.json        # 项目配置和依赖
 ├── README.md          # 项目文档
+├── config.json        # 配置文件
 └── public/            # 前端静态文件目录
     └── index.html     # Web界面
 ```
+
+### 配置说明
+
+配置文件位于 [config.json](config.json)。以下是当前可用的主要配置选项及其默认值：
+
+- **`server.port`**: 服务器监听端口，默认 `3000`。
+- **`server.enableRateLimit`**: 是否启用简单频率限制（对非本地IP），默认 `true`。
+- **`server.minSecondsAfterLastRequest`**: 两次请求之间允许的最小秒数（当启用频率限制时），默认 `10`（秒）。
+- **`getClientIp.getIpByXFF`**: 是否从 `X-Forwarded-For` 头中解析客户端 IP，默认 `true`。
+- **`getClientIp.getIpByXFFFromStart`**: 从 `X-Forwarded-For` 的开头取第 N 个 IP（`true`）还是从末尾取（`false`），默认 `true`。
+- **`getClientIp.getIpByXFFCount`**: 取 `X-Forwarded-For` 中的第 N 个 IP（与上项配合），默认 `1`。
+- **`systemStats.updateInterval`**: 系统状态缓存与采集间隔（毫秒），默认 `10000`（10 秒）。
+- **`systemStats.ipRequestCountSaveMinutes`**: 清空 IP 请求计数的间隔（分钟），默认 `60`（分钟）。
+- **`systemStats.MaxHistoryLength`**: 保留的历史数据点数量，默认 `60`（如果采集间隔为10秒，约为10分钟的数据）。
+
+修改 `config.json` 后需重启服务以使配置生效。
+
 
 ## API接口
 
@@ -127,21 +145,40 @@ GET /api/status
 
 ## 自定义配置
 
-### 修改端口号
+### 环境变量覆盖
 
-编辑 `server.js` 文件，修改以下行：
+你可以使用环境变量覆盖配置中的端口（常见于容器/云部署）：
 
-```javascript
-const port = 3000; // 修改为你需要的端口号
+```bash
+# 使用环境变量覆盖端口
+PORT=8080 npm start
 ```
 
-### 修改数据采集间隔
+建议在生产环境中通过 `process manager`（如 `pm2`）或 `systemd` 启动并管理进程。
 
-编辑 `server.js` 文件，修改以下常量：
+### 示例配置片段（config.json）
 
-```javascript
-const CACHE_INTERVAL = 10000; // 数据采集间隔（毫秒）
+```json
+{
+    "server": {
+        "port": 3000,
+        "enableRateLimit": true,
+        "minSecondsAfterLastRequest": 10
+    },
+    "getClientIp": {
+        "getIpByXFF": true,
+        "getIpByXFFFromStart": true,
+        "getIpByXFFCount": 1
+    },
+    "systemStats": {
+        "updateInterval": 10000,
+        "ipRequestCountSaveMinutes": 60,
+        "MaxHistoryLength": 60
+    }
+}
 ```
+
+修改 `config.json` 后需重启服务以使配置生效。
 
 ## 使用场景
 
