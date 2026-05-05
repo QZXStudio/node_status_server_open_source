@@ -59,36 +59,38 @@
     .status-card {
       display: flex;
       justify-content: space-between;
+      align-items: center;
       margin-bottom: 20px;
       padding: 20px;
       background-color: #f8f9fa;
       border-radius: 8px;
       border-left: 4px solid #007bff;
+      cursor: pointer;
+      transition: background-color 0.3s;
+      user-select: none;
     }
-    
+    .status-card:hover {
+      background-color: #e9ecef;
+    }
     .status-card h3 {
       font-size: 18px;
       color: #2c3e50;
-      margin-bottom: 10px;
+      margin-bottom: 5px;
     }
-    
     .status-badge {
       padding: 5px 15px;
       border-radius: 20px;
       font-weight: bold;
       font-size: 14px;
     }
-    
     .status-ok {
       background-color: #d4edda;
       color: #155724;
     }
-    
     .status-off {
       background-color: #f8d7da;
       color: #721c24;
     }
-    
     .status-unknown {
       background-color: #fff3cd;
       color: #856404;
@@ -189,6 +191,63 @@
       font-size: 14px;
     }
     
+    /* NapCat 异常历史弹窗 */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.5);
+      z-index: 200;
+      justify-content: center;
+      align-items: center;
+    }
+    .modal-overlay.active {
+      display: flex;
+    }
+    .modal-content {
+      background: #fff;
+      border-radius: 8px;
+      padding: 25px;
+      max-width: 700px;
+      width: 95%;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+    }
+    .modal-content h3 {
+      margin-bottom: 15px;
+    }
+    .event-item {
+      padding: 8px 0;
+      border-bottom: 1px solid #eee;
+      font-size: 14px;
+    }
+    .event-item:last-child {
+      border-bottom: none;
+    }
+    /* 已解决的小徽章 */
+    .resolved-badge {
+      display: inline-block;
+      background-color: #d4edda;
+      color: #155724;
+      border-radius: 12px;
+      padding: 2px 10px;
+      font-size: 12px;
+      font-weight: bold;
+      margin-left: 10px;
+      vertical-align: middle;
+    }
+    .close-btn {
+      float: right;
+      cursor: pointer;
+      font-size: 24px;
+      color: #aaa;
+    }
+    .close-btn:hover { color: #333; }
+    
     @media (max-width: 768px) {
       .container {
         margin: 10px;
@@ -220,6 +279,17 @@
   <div class="container">
     <h1>服务器状态监控</h1>
     
+    <!-- NapCat 状态卡片 -->
+    <div id="napcat-card" class="status-card" onclick="toggleEventHistory()">
+      <div>
+        <h3>NapCat 状态</h3>
+        <span id="napcat-status-text" style="font-size: 16px;">检测中...</span>
+      </div>
+      <div>
+        <span id="napcat-badge" class="status-badge status-unknown">检测中</span>
+      </div>
+    </div>
+    
     <div class="system-stats">
       <h2>系统资源</h2>
       <div class="stats-grid">
@@ -236,9 +306,9 @@
         
         <div class="stat-card">
           <h3>CPU信息</h3>
-          <div class="stat-value" id="cpu-model">加载中...</div>
+          <div class="stat-value" id="cpu-usage">加载中...</div>
           <div style="margin-top: 5px; font-size: 12px; color: #6c757d;">
-            <span id="cpu-count">加载中...</span>
+            <span id="cpu-model">加载中...</span> | <span id="cpu-count">加载中...</span>
           </div>
         </div>
         
@@ -265,10 +335,16 @@
       <div class="chart-container">
         <canvas id="cpu-chart"></canvas>
       </div>
+      <div class="chart-container">
+        <canvas id="napcat-delay-chart"></canvas>
+      </div>
+      <div class="chart-container">
+        <canvas id="napcat-status-chart"></canvas>
+      </div>
     </div>
     
     <div class="ip-stats">
-      <h2>请求数量前5的IP地址</h2>
+      <h2></h2>
       <table class="ip-table">
         <thead>
           <tr>
@@ -291,9 +367,20 @@
     </div>
   </div>
   
+  <!-- 异常历史弹窗 -->
+  <div id="event-modal" class="modal-overlay" onclick="closeEventHistory(event)">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <span class="close-btn" onclick="closeEventHistory()">&times;</span>
+      <h3>NapCat 异常事件记录（全部历史）</h3>
+      <div id="event-list">加载中...</div>
+    </div>
+  </div>
+  
   <script>
     // 图表实例
-    let memoryChart, cpuChart;
+    let memoryChart, cpuChart, napcatDelayChart, napcatStatusChart;
+    // 保存最近一次完整的 napcat 数据对象（用于弹窗）
+    let latestNapcatData = null;
     
     // 初始化图表
     function initCharts() {
@@ -337,9 +424,7 @@
               display: true,
               text: '10分钟内存使用趋势'
             },
-            legend: {
-              display: false
-            }
+            legend: { display: false }
           }
         }
       });
@@ -384,8 +469,104 @@
               display: true,
               text: '10分钟CPU使用趋势'
             },
-            legend: {
-              display: false
+            legend: { display: false }
+          }
+        }
+      });
+      
+      // NapCat 延迟图表
+      const delayCtx = document.getElementById('napcat-delay-chart').getContext('2d');
+      napcatDelayChart = new Chart(delayCtx, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [{
+            label: 'NapCat 响应延迟 (ms)',
+            data: [],
+            borderColor: 'rgba(153, 102, 255, 1)',
+            backgroundColor: 'rgba(153, 102, 255, 0.2)',
+            borderWidth: 2,
+            tension: 0.4,
+            fill: true
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            y: {
+              beginAtZero: true,
+              title: {
+                display: true,
+                text: '延迟 (ms)'
+              }
+            },
+            x: {
+              title: { display: true, text: '时间' }
+            }
+          },
+          plugins: {
+            title: {
+              display: true,
+              text: 'NapCat 延迟趋势'
+            },
+            legend: { display: false }
+          }
+        }
+      });
+      
+      // NapCat 状态图表 (离散值，台阶图)
+      const statusCtx = document.getElementById('napcat-status-chart').getContext('2d');
+      napcatStatusChart = new Chart(statusCtx, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [{
+            label: 'NapCat 状态',
+            data: [],
+            borderColor: 'rgba(255, 159, 64, 1)',
+            backgroundColor: 'rgba(255, 159, 64, 0.2)',
+            borderWidth: 2,
+            stepped: true,
+            fill: false
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            y: {
+              min: -3,
+              max: 2,
+              ticks: {
+                stepSize: 1,
+                callback: function(value) {
+                  const labels = { 1: '正常', 0: '离线', '-1': '错误', '-2': '未运行' };
+                  return labels[value] || '';
+                }
+              },
+              title: {
+                display: true,
+                text: '状态'
+              }
+            },
+            x: {
+              title: { display: true, text: '时间' }
+            }
+          },
+          plugins: {
+            title: {
+              display: true,
+              text: 'NapCat 状态变化'
+            },
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function(ctx) {
+                  const labels = { 1: '正常', 0: '离线', '-1': '错误', '-2': '未运行' };
+                  return labels[ctx.raw] || ctx.raw;
+                }
+              }
             }
           }
         }
@@ -395,12 +576,11 @@
     // 获取状态信息
     async function getStatus() {
       try {
-        const response = await fetch('/api/status');
+        const response = await fetch('api/status/');
         
         if (!response.ok) {
           if (response.status === 429) {
             console.error('请求过于频繁');
-            // 显示请求过于频繁的提示
             document.getElementById('refresh-status').textContent = '请求过于频繁，请稍后再试';
             document.getElementById('refresh-status').style.color = 'red';
           }
@@ -410,15 +590,17 @@
         const data = await response.json();
         
         if (data.success) {
-          // 更新系统信息
+          // 保存 napcat 完整数据，供弹窗使用（点击时才构建列表）
+          latestNapcatData = data.napcat;
+          
+          updateNapcatStatus(data.napcat);
           updateSystemStats(data.system);
-          // 更新IP请求统计
+          document.querySelector('.ip-stats h2').textContent = 
+            `最近${data.ipRequestCountSaveMinutes}分钟请求数量前${data.topIPCount}的IP地址`;
           updateIPStats(data.topIPs);
-          // 更新图表
-          updateCharts(data.system.history);
-          // 更新时间
+          updateCharts(data.system);
+          updateNapcatCharts(data.napcat.history);
           document.getElementById('last-updated').textContent = new Date().toLocaleString();
-          // 重置刷新状态
           document.getElementById('refresh-status').textContent = '15秒';
           document.getElementById('refresh-status').style.color = '';
         }
@@ -427,26 +609,82 @@
       }
     }
     
+    // 更新 NapCat 状态卡片（新增显示异常开始时间）
+    function updateNapcatStatus(napcat) {
+      const statusText = document.getElementById('napcat-status-text');
+      const badge = document.getElementById('napcat-badge');
+      const card = document.getElementById('napcat-card');
+      
+      let status = napcat.status;
+      let displayText = '';
+      let badgeClass = 'status-unknown';
+      let borderColor = '#007bff';
+      
+      switch(status) {
+        case 'normal':
+          displayText = '运行正常 · 延迟 ' + napcat.delay + ' ms';
+          badgeClass = 'status-ok';
+          borderColor = '#28a745';
+          badge.textContent = '在线';
+          break;
+        case 'offline':
+          displayText = 'QQ已下线 · 延迟 ' + napcat.delay + ' ms';
+          badgeClass = 'status-off';
+          borderColor = '#dc3545';
+          badge.textContent = '离线';
+          break;
+        case 'error':
+          displayText = '响应异常 · 延迟 ' + napcat.delay + ' ms';
+          badgeClass = 'status-off';
+          borderColor = '#dc3545';
+          badge.textContent = '错误';
+          break;
+        case 'not_running':
+          displayText = 'NapCat 未启动';
+          badgeClass = 'status-off';
+          borderColor = '#dc3545';
+          badge.textContent = '未运行';
+          break;
+        default:
+          displayText = '检测中...';
+          badgeClass = 'status-unknown';
+          borderColor = '#ffc107';
+          badge.textContent = '检测中';
+      }
+      
+      // 如果有当前异常，显示开始时间
+      if (napcat.currentAnomaly) {
+        const startTime = new Date(napcat.currentAnomaly.startTime).toLocaleString();
+        displayText += ' · 异常始于 ' + startTime;
+      }
+      
+      statusText.textContent = displayText;
+      badge.className = 'status-badge ' + badgeClass;
+      card.style.borderLeftColor = borderColor;
+    }
+    
     // 更新系统信息
     function updateSystemStats(system) {
-      // 内存信息
-      document.getElementById('memory-usage').textContent = system.memory.usage;
-      document.getElementById('memory-details').textContent = system.memory.used + ' / ' + system.memory.total;
+      if (!system) return;
       
-      // 解析内存使用百分比
-      const memoryUsage = parseFloat(system.memory.usage);
+      // 内存信息 (ram)
+      const ram = system.ram;
+      document.getElementById('memory-usage').textContent = ram.usage;
+      document.getElementById('memory-details').textContent = ram.used + ' / ' + ram.total;
+      const memoryUsage = parseFloat(ram.usage);
       document.getElementById('memory-fill').style.width = memoryUsage + '%';
       
       // CPU信息
-      document.getElementById('cpu-model').textContent = system.cpu.model;
-      document.getElementById('cpu-count').textContent = system.cpu.count + ' 核心';
-      
-      // 运行时间
-      document.getElementById('uptime').textContent = system.system.uptime;
+      const cpu = system.cpu;
+      document.getElementById('cpu-usage').textContent = cpu.usage;
+      document.getElementById('cpu-model').textContent = cpu.model || 'CPU';
+      document.getElementById('cpu-count').textContent = cpu.count + ' 核心';
       
       // 系统信息
-      document.getElementById('hostname').textContent = system.system.hostname;
-      document.getElementById('system-info').textContent = system.system.platform + ' ' + system.system.arch;
+      const sys = system.system;
+      document.getElementById('uptime').textContent = sys.uptime;
+      document.getElementById('hostname').textContent = sys.hostname;
+      document.getElementById('system-info').textContent = sys.platform + ' ' + sys.arch;
     }
     
     // 更新IP请求统计
@@ -471,25 +709,101 @@
       }
     }
     
-    // 更新图表
-    function updateCharts(history) {
-      if (!history || !history.timestamp || !memoryChart || !cpuChart) return;
-      
-      // 格式化时间标签
-      const labels = history.timestamp.map(timestamp => {
-        const date = new Date(timestamp);
-        return date.toLocaleTimeString();
-      });
+    // 更新 CPU / 内存图表 (各自独立的历史)
+    function updateCharts(system) {
+      if (!system || !memoryChart || !cpuChart) return;
       
       // 更新内存图表
-      memoryChart.data.labels = labels;
-      memoryChart.data.datasets[0].data = history.memory;
-      memoryChart.update();
+      if (system.ram && system.ram.history) {
+        const memHistory = system.ram.history;
+        const labels = memHistory.timestamp.map(t => new Date(t).toLocaleTimeString());
+        memoryChart.data.labels = labels;
+        memoryChart.data.datasets[0].data = memHistory.values;
+        memoryChart.update();
+      }
       
       // 更新CPU图表
-      cpuChart.data.labels = labels;
-      cpuChart.data.datasets[0].data = history.cpu;
-      cpuChart.update();
+      if (system.cpu && system.cpu.history) {
+        const cpuHistory = system.cpu.history;
+        const labels = cpuHistory.timestamp.map(t => new Date(t).toLocaleTimeString());
+        cpuChart.data.labels = labels;
+        cpuChart.data.datasets[0].data = cpuHistory.values;
+        cpuChart.update();
+      }
+    }
+    
+    // 更新 NapCat 图表
+    function updateNapcatCharts(napcatHistory) {
+      if (!napcatHistory || !napcatDelayChart || !napcatStatusChart) return;
+      
+      const labels = napcatHistory.timestamp.map(t => new Date(t).toLocaleTimeString());
+      
+      // 延迟图表
+      napcatDelayChart.data.labels = labels;
+      napcatDelayChart.data.datasets[0].data = napcatHistory.delay;
+      napcatDelayChart.update();
+      
+      // 状态图表
+      napcatStatusChart.data.labels = labels;
+      napcatStatusChart.data.datasets[0].data = napcatHistory.status;
+      napcatStatusChart.update();
+    }
+    
+    // 弹窗控制：点击打开时实时构建列表
+    function toggleEventHistory() {
+      const modal = document.getElementById('event-modal');
+      const eventList = document.getElementById('event-list');
+      
+      if (!latestNapcatData) {
+        eventList.innerHTML = '<p>暂无数据，请等待状态刷新</p>';
+        modal.classList.add('active');
+        return;
+      }
+      
+      // 构建事件列表：先显示当前正在发生的异常（如果有），再显示历史事件
+      let html = '';
+      const currentAnomaly = latestNapcatData.currentAnomaly;
+      if (currentAnomaly) {
+        html += buildEventItem(currentAnomaly, true); // 当前异常，结束时间为空
+      }
+      
+      const historyEvents = latestNapcatData.recentEvents || [];
+      historyEvents.forEach(event => {
+        html += buildEventItem(event, false);
+      });
+      
+      if (!html) {
+        html = '<p>暂无异常事件记录</p>';
+      }
+      
+      eventList.innerHTML = html;
+      modal.classList.add('active');
+    }
+    
+    function buildEventItem(event, isCurrent) {
+      let typeText = '';
+      switch(event.type) {
+        case 'offline': typeText = '离线'; break;
+        case 'error': typeText = '错误'; break;
+        case 'not_running': typeText = '未运行'; break;
+        default: typeText = event.type;
+      }
+      const start = new Date(event.startTime).toLocaleString();
+      const end = isCurrent || !event.endTime ? '至今' : new Date(event.endTime).toLocaleString();
+      // 已解决的事件在标题后添加小徽章
+      let badgeHtml = '';
+      if (!isCurrent && event.endTime) {
+        badgeHtml = ' <span class="resolved-badge">已解决</span>';
+      }
+      return `<div class="event-item">
+        <strong>[${typeText}]</strong>${badgeHtml} ${start} ~ ${end}<br>
+        <span style="color: #666;">${event.reason || ''}</span>
+      </div>`;
+    }
+    
+    function closeEventHistory(event) {
+      if (event && event.target !== document.getElementById('event-modal')) return;
+      document.getElementById('event-modal').classList.remove('active');
     }
     
     // 初始化图表
@@ -516,13 +830,10 @@
       document.getElementById('time-bar').textContent = timeString;
     }
     
-    // 初始更新时间栏
     updateTimeBar();
-    
-    // 定时更新时间栏
     setInterval(updateTimeBar, 1000);
     
-    // 定时刷新
+    // 定时刷新（15秒一次）
     setInterval(getStatus, 15000);
   </script>
 </body>
