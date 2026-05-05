@@ -119,6 +119,13 @@ node_status_server_open_source/
    - 实时监控Nginx访问日志文件
    - 自动提取客户端IP地址
    - 配置：`getClientIp.nginxAccessLogEnabled = true`
+   - 使用 CDN 时获取真实客户端 IP：若服务前面部署了 CDN（如 Cloudflare），Nginx 日志中记录的可能是 CDN 回源 IP，而非真实客户端 IP。可通过 Nginx 的 `ngx_http_realip_module` 模块将真实 IP 传递给日志。在 Nginx 配置中添加以下内容：
+   ```
+   set_real_ip_from 回源IP/网段;
+   real_ip_header X-Forwarded-For;
+   ```
+   其中 `回源IP/网段` 需替换为 CDN 提供的回源 IP 列表或网段。配置后 Nginx 日志会正确记录 `X-Forwarded-For` 头中的客户端 IP，本监控系统即可从日志中提取真实 IP
+
 
 2. **pcap抓包模式**
    - 使用pcap库进行网络抓包
@@ -130,13 +137,7 @@ node_status_server_open_source/
 3. **API请求计数模式**（降级模式）
    - 通过API请求计数统计IP
    - 在前两种模式不可用时自动启用
-- 使用 CDN 时获取真实客户端 IP：若服务前面部署了 CDN（如 Cloudflare），Nginx 日志中记录的可能是 CDN 回源 IP，而非真实客户端 IP。可通过 Nginx 的 `ngx_http_realip_module` 模块将真实 IP 传递给日志。在 Nginx 配置中添加以下内容：
-  \```nginx
-  set_real_ip_from 回源IP/网段;
-  real_ip_header X-Forwarded-For;
-  \```
-  其中 `回源IP/网段` 需替换为 CDN 提供的回源 IP 列表或网段。配置后 Nginx 日志会正确记录 `X-Forwarded-For` 头中的客户端 IP，本监控系统即可从日志中提取真实 IP
-  
+
 ### IP排除规则
 系统自动检测局域网网段并排除内部IP，避免统计内部流量：
 - 自动检测所有非回环网卡的IP段
