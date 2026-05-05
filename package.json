@@ -1,6 +1,6 @@
 {
   "name": "node-status-server-open-source",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "简单的服务器状态监控服务",
   "main": "server.js",
   "scripts": {
