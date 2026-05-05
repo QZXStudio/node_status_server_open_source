@@ -97,7 +97,7 @@ const defaultConfig = {
   updateInterval: 10000,
   MaxHistoryLength: 60,
   server: {
-    port: 50000,
+    port: 3000,
     enableRateLimit: true,
     minSecondsAfterLastRequest: 10
   },
