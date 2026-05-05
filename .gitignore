@@ -15,6 +15,9 @@ node_modules/
 *.swp
 *.swo
 
+# ignore config.json to prevent leaking sensitive tokens
+config.json
+
 # 构建工具生成的文件
 npm-debug.log*
 yarn-debug.log*
